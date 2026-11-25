@@ -1,0 +1,25 @@
+# --- Python & Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# --- Local Environment & Secrets ---
+.env
+*.local.env
+
+# --- Internal Scratchpads & Temp Files ---
+internal/
+scratch/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
