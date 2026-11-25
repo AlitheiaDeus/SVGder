@@ -15,6 +15,7 @@ import uvicorn
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
+from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
 STATIC_DIR = Path(__file__).parent / "static"
 WORKSPACE_ROOT = Path.cwd()
@@ -65,6 +66,8 @@ async def api_vectorize(
     sigma: float = Form(default=0.33),
     n_blobs: int = Form(default=220),
     soft_gaussian: bool = Form(default=True),
+    poly_points: int = Form(default=800),
+    wireframe: bool = Form(default=False),
 ) -> JSONResponse:
     if file is not None:
         raw = await file.read()
@@ -104,6 +107,14 @@ async def api_vectorize(
             BlobOptions(
                 n_blobs=max(20, min(600, n_blobs)),
                 soft_gaussian=soft_gaussian,
+            ),
+        )
+    elif mode == "lowpoly":
+        svg, stats = vectorize_lowpoly(
+            img,
+            LowPolyOptions(
+                points=max(80, min(3000, poly_points)),
+                wireframe=wireframe,
             ),
         )
     else:

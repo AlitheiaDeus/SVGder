@@ -11,6 +11,7 @@ import cv2
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
+from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
 
 def convert_file(
@@ -24,6 +25,8 @@ def convert_file(
     stroke_width: float = 2.0,
     n_blobs: int = 240,
     soft_gaussian: bool = True,
+    poly_points: int = 800,
+    wireframe: bool = False,
 ) -> dict:
     img = cv2.imread(str(input_path), cv2.IMREAD_COLOR)
     if img is None:
@@ -56,6 +59,14 @@ def convert_file(
                 soft_gaussian=soft_gaussian,
             ),
         )
+    elif mode == "lowpoly":
+        svg, stats = vectorize_lowpoly(
+            img,
+            LowPolyOptions(
+                points=poly_points,
+                wireframe=wireframe,
+            ),
+        )
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -78,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-m",
         "--mode",
-        choices=["gremlin", "canny", "blobs", "all"],
+        choices=["gremlin", "canny", "blobs", "lowpoly", "all"],
         default="gremlin",
         help="Vectorization engine (default: gremlin).",
     )
@@ -89,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stroke-width", type=float, default=2.0)
     parser.add_argument("--blobs", type=int, default=240, help="Number of Gaussian splats in blobs mode.")
     parser.add_argument("--hard-blobs", action="store_true", help="Use crisp ellipses instead of Gaussian gradients.")
+    parser.add_argument("--poly-points", type=int, default=800, help="Number of mesh vertices in lowpoly mode.")
+    parser.add_argument("--wireframe", action="store_true", help="Draw subtle mesh edges in lowpoly mode.")
     parser.add_argument("--serve", action="store_true", help="Launch the interactive SVGder Studio web UI.")
     parser.add_argument("--port", type=int, default=8765, help="Port for --serve (default: 8765).")
 
@@ -106,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     inp = Path(args.input)
     if args.mode == "all":
         stem = inp.with_suffix("")
-        for m in ("gremlin", "canny", "blobs"):
+        for m in ("gremlin", "canny", "blobs", "lowpoly"):
             out = Path(f"{stem}_{m}.svg")
             stats = convert_file(
                 inp,
@@ -119,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
                 stroke_width=args.stroke_width,
                 n_blobs=args.blobs,
                 soft_gaussian=not args.hard_blobs,
+                poly_points=args.poly_points,
+                wireframe=args.wireframe,
             )
             print(f"[{m}] -> {out} | {stats}")
         return 0
@@ -135,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         stroke_width=args.stroke_width,
         n_blobs=args.blobs,
         soft_gaussian=not args.hard_blobs,
+        poly_points=args.poly_points,
+        wireframe=args.wireframe,
     )
     print(f"[{args.mode}] -> {out} | {stats}")
     return 0

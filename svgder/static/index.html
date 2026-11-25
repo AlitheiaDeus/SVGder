@@ -62,8 +62,8 @@
     }
     .tabs {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
       background: #130f1a;
       padding: 4px;
       border-radius: 10px;
@@ -227,7 +227,7 @@
   <aside>
     <div>
       <h1>SVGder Studio</h1>
-      <div class="subtitle">Gremlin Bezier · Canny Strokes · Gaussian Blobs</div>
+      <div class="subtitle">Gremlin Bezier · Canny Strokes · Gaussian Blobs · Low-Poly</div>
     </div>
 
     <div class="dropzone" id="dropzone">
@@ -240,6 +240,7 @@
       <button class="tab active" data-mode="gremlin">Gremlin</button>
       <button class="tab" data-mode="canny">Canny</button>
       <button class="tab" data-mode="blobs">Blobs</button>
+      <button class="tab" data-mode="lowpoly">Low-Poly</button>
     </div>
 
     <div class="control-group" id="gremlinControls">
@@ -278,6 +279,12 @@
       <label><input type="checkbox" id="softGaussian" checked /> Soft radial Gaussian falloff</label>
     </div>
 
+    <div class="control-group hidden" id="lowpolyControls">
+      <label>Mesh Vertices <span id="polyVal">800</span></label>
+      <input type="range" id="polyPoints" min="150" max="2500" step="50" value="800" />
+      <label><input type="checkbox" id="wireframe" /> Show mesh wireframe</label>
+    </div>
+
     <button class="btn" id="convertBtn">Vectorize Image</button>
     <button class="btn secondary" id="downloadBtn" disabled>Download .SVG</button>
 
@@ -295,6 +302,7 @@
         <button class="pill active" data-view="split">Split Compare</button>
         <button class="pill" data-view="svg">SVG Only</button>
         <button class="pill" data-view="raster">Original Only</button>
+        <button class="pill" data-view="diff">Diff</button>
       </div>
       <div class="pill-row">
         <label style="gap:8px">Split <input type="range" id="splitRange" min="0" max="100" value="50" style="width:110px" /></label>
@@ -322,13 +330,22 @@
     function updateSplit() {
       const pct = Number($("splitRange").value);
       const svgLayer = $("svgContainer");
+      const wrap = $("canvasWrap");
       const handle = $("splitHandle");
+      svgLayer.style.mixBlendMode = "normal";
+      wrap.style.background = "white";
       if (currentView === "svg") {
         svgLayer.style.clipPath = "inset(0 0 0 0)";
         svgLayer.style.opacity = "1";
         handle.classList.add("hidden");
       } else if (currentView === "raster") {
         svgLayer.style.opacity = "0";
+        handle.classList.add("hidden");
+      } else if (currentView === "diff") {
+        svgLayer.style.clipPath = "inset(0 0 0 0)";
+        svgLayer.style.opacity = "1";
+        svgLayer.style.mixBlendMode = "difference";
+        wrap.style.background = "#000";
         handle.classList.add("hidden");
       } else {
         svgLayer.style.opacity = "1";
@@ -346,6 +363,7 @@
         $("gremlinControls").classList.toggle("hidden", currentMode !== "gremlin");
         $("cannyControls").classList.toggle("hidden", currentMode !== "canny");
         $("blobsControls").classList.toggle("hidden", currentMode !== "blobs");
+        $("lowpolyControls").classList.toggle("hidden", currentMode !== "lowpoly");
         runVectorize();
       });
     });
@@ -371,6 +389,7 @@
     $("strokeWidth").addEventListener("input", (e) => ($("swVal").textContent = e.target.value));
     $("sigma").addEventListener("input", (e) => ($("sigmaVal").textContent = e.target.value));
     $("nBlobs").addEventListener("input", (e) => ($("blobsVal").textContent = e.target.value));
+    $("polyPoints").addEventListener("input", (e) => ($("polyVal").textContent = e.target.value));
 
     const dz = $("dropzone");
     dz.addEventListener("click", () => $("fileInput").click());
@@ -409,6 +428,8 @@
         fd.append("sigma", $("sigma").value);
         fd.append("n_blobs", $("nBlobs").value);
         fd.append("soft_gaussian", $("softGaussian").checked ? "true" : "false");
+        fd.append("poly_points", $("polyPoints").value);
+        fd.append("wireframe", $("wireframe").checked ? "true" : "false");
 
         const res = await fetch("/api/vectorize", { method: "POST", body: fd });
         const data = await res.json();
@@ -420,7 +441,7 @@
         const st = data.stats;
         $("stEngine").textContent = st.engine;
         $("stTime").textContent = `${st.elapsed_ms} ms`;
-        $("stElems").textContent = st.paths ?? st.strokes ?? st.blobs ?? "—";
+        $("stElems").textContent = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
         $("stSize").textContent = `${(st.bytes / 1024).toFixed(1)} KB`;
         updateSplit();
       } catch (err) {

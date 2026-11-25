@@ -14,8 +14,8 @@ from svgder.curves import rgb_to_hex
 @dataclass
 class BlobOptions:
     n_blobs: int = 240
-    work_size: int = 220
-    candidates_per_step: int = 28
+    work_size: int = 340
+    candidates_per_step: int = 32
     soft_gaussian: bool = True
     seed: int = 42
 
@@ -29,6 +29,7 @@ def _make_gaussian_patch(
     ry: float,
     angle_rad: float,
     soft: bool,
+    sharpness: float = 2.8,
 ) -> np.ndarray:
     """Render an oriented 2D Gaussian or solid ellipse mask in [0, 1] over a local grid."""
     xs = np.arange(bw, dtype=np.float32) - cx
@@ -38,11 +39,12 @@ def _make_gaussian_patch(
     sa = math.sin(angle_rad)
     u = gx * ca + gy * sa
     v = -gx * sa + gy * ca
-    dist2 = (u / max(1.0, rx)) ** 2 + (v / max(1.0, ry)) ** 2
+    dist2 = (u / max(0.5, rx)) ** 2 + (v / max(0.5, ry)) ** 2
     if soft:
-        # Smooth truncated Gaussian falloff reaching ~0 at dist2 >= 1.0
-        mask = np.exp(-2.8 * dist2)
-        mask[dist2 > 1.25] = 0.0
+        # Smooth truncated Gaussian falloff reaching ~0.015 at cutoff
+        cutoff = 4.2 / max(1.0, sharpness)
+        mask = np.exp(-sharpness * dist2)
+        mask[dist2 > cutoff] = 0.0
         return mask.astype(np.float32)
     return (dist2 <= 1.0).astype(np.float32)
 
@@ -79,9 +81,11 @@ def _eval_blob(
     angle: float,
     alpha: float,
     soft: bool,
+    sharpness: float = 2.8,
 ) -> tuple[float, np.ndarray, tuple[int, int, int, int], np.ndarray]:
     h, w = target.shape[:2]
-    extent = int(math.ceil(max(rx, ry) * (1.15 if soft else 1.05))) + 1
+    extent_scale = math.sqrt(4.2 / max(1.0, sharpness)) if soft else 1.05
+    extent = int(math.ceil(max(rx, ry) * extent_scale)) + 1
     x0 = max(0, int(math.floor(cx - extent)))
     y0 = max(0, int(math.floor(cy - extent)))
     x1 = min(w, int(math.ceil(cx + extent)))
@@ -89,7 +93,7 @@ def _eval_blob(
     if x1 <= x0 or y1 <= y0:
         return -1e18, np.zeros(3, dtype=np.float32), (0, 0, 0, 0), np.zeros((0, 0), dtype=np.float32)
 
-    mask = _make_gaussian_patch(x1 - x0, y1 - y0, cx - x0, cy - y0, rx, ry, angle, soft)
+    mask = _make_gaussian_patch(x1 - x0, y1 - y0, cx - x0, cy - y0, rx, ry, angle, soft, sharpness)
     color, gain = _optimal_color_and_gain(target[y0:y1, x0:x1], canvas[y0:y1, x0:x1], mask, alpha)
     return gain, color, (x0, y0, x1, y1), mask
 
@@ -107,6 +111,13 @@ def vectorize_blobs(
 
     small_bgr = cv2.resize(image_bgr, (ww, wh), interpolation=cv2.INTER_AREA)
     target = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
+
+    # Local edge orientation for anisotropic edge-aligned splat proposals
+    gray = cv2.cvtColor(small_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad_mag = np.hypot(gx, gy)
+    edge_tangent = np.arctan2(gy, gx) + (math.pi * 0.5)
 
     # Background color = median of image borders
     border = np.vstack([target[0, :], target[-1, :], target[:, 0], target[:, -1]])
@@ -136,20 +147,31 @@ def vectorize_blobs(
         best_box = None
         best_mask = None
 
-        # Early blobs are larger; later blobs refine finer details
+        # Coarse-to-fine scale and adaptive sharpness: broad soft shading early, crisp detail late
         progress = i / max(1, opts.n_blobs)
-        max_r = max(5.0, min(ww, wh) * (0.34 * (1.0 - 0.72 * progress)))
-        min_r = max(2.2, max_r * 0.16)
+        sharpness = 2.6 + 5.4 * (progress ** 1.15)
+        max_r = max(4.5, min(ww, wh) * (0.34 * ((1.0 - progress) ** 1.35) + 0.03))
+        min_r = max(0.75, max_r * (0.14 * (1.0 - 0.65 * progress)))
 
         sampled_flat = rng.choice(ww * wh, size=opts.candidates_per_step, p=probs)
-        for flat_idx in sampled_flat:
-            cy = float(flat_idx // ww)
-            cx = float(flat_idx % ww)
-            rx = float(rng.uniform(min_r, max_r))
-            ry = float(rng.uniform(min_r, max_r))
-            angle = float(rng.uniform(0.0, math.pi))
-            alpha = float(rng.uniform(0.45, 0.92))
-            gain, color, box, mask = _eval_blob(target, canvas, cx, cy, rx, ry, angle, alpha, opts.soft_gaussian)
+        for cand_idx, flat_idx in enumerate(sampled_flat):
+            iy = int(flat_idx // ww)
+            ix = int(flat_idx % ww)
+            cy = float(iy)
+            cx = float(ix)
+            if cand_idx % 2 == 0 and grad_mag[iy, ix] > 12.0:
+                # Edge-aligned anisotropic proposal: thin across the edge, elongated along it
+                rx = float(rng.uniform(max(2.0, min_r * 1.8), max(4.5, max_r * 0.75)))
+                ry = float(rng.uniform(max(0.65, min_r * 0.5), max(1.4, min_r * 1.8)))
+                angle = float((edge_tangent[iy, ix] + rng.normal(0.0, 0.14)) % math.pi)
+            else:
+                rx = float(rng.uniform(min_r, max_r))
+                ry = float(rng.uniform(min_r, max_r))
+                angle = float(rng.uniform(0.0, math.pi))
+            alpha = float(rng.uniform(0.45, 0.94))
+            gain, color, box, mask = _eval_blob(
+                target, canvas, cx, cy, rx, ry, angle, alpha, opts.soft_gaussian, sharpness
+            )
             if gain > best_gain:
                 best_gain = gain
                 best_params = [cx, cy, rx, ry, angle, alpha]
@@ -160,8 +182,16 @@ def vectorize_blobs(
         if best_params is None or best_gain <= 0:
             continue
 
-        # Fast coordinate hill-climbing refinement
-        steps = [3.0, 3.0, max(1.5, best_params[2] * 0.25), max(1.5, best_params[3] * 0.25), 0.35, 0.12]
+        # Scale-aware coordinate hill-climbing refinement
+        pos_step = max(0.8, min(3.5, min(best_params[2], best_params[3]) * 0.45))
+        steps = [
+            pos_step,
+            pos_step,
+            max(0.4, best_params[2] * 0.25),
+            max(0.35, best_params[3] * 0.25),
+            0.28,
+            0.12,
+        ]
         for round_scale in (1.0, 0.45):
             for p_idx in range(6):
                 for sign in (-1.0, 1.0):
@@ -169,11 +199,20 @@ def vectorize_blobs(
                     cand[p_idx] += sign * steps[p_idx] * round_scale
                     cand[0] = float(np.clip(cand[0], 0.0, ww - 1.0))
                     cand[1] = float(np.clip(cand[1], 0.0, wh - 1.0))
-                    cand[2] = float(np.clip(cand[2], 1.8, ww * 0.55))
-                    cand[3] = float(np.clip(cand[3], 1.8, wh * 0.55))
+                    cand[2] = float(np.clip(cand[2], 0.65, ww * 0.55))
+                    cand[3] = float(np.clip(cand[3], 0.65, wh * 0.55))
                     cand[5] = float(np.clip(cand[5], 0.2, 0.96))
                     gain, color, box, mask = _eval_blob(
-                        target, canvas, cand[0], cand[1], cand[2], cand[3], cand[4], cand[5], opts.soft_gaussian
+                        target,
+                        canvas,
+                        cand[0],
+                        cand[1],
+                        cand[2],
+                        cand[3],
+                        cand[4],
+                        cand[5],
+                        opts.soft_gaussian,
+                        sharpness,
                     )
                     if gain > best_gain:
                         best_gain = gain
@@ -196,15 +235,18 @@ def vectorize_blobs(
 
         if opts.soft_gaussian:
             gid = f"g{i}"
+            extent_scale = math.sqrt(4.2 / sharpness)
             defs.append(
                 f'    <radialGradient id="{gid}" cx="50%" cy="50%" r="50%">\n'
                 f'      <stop offset="0%" stop-color="{hex_c}" stop-opacity="{alpha_val:.3f}"/>\n'
-                f'      <stop offset="55%" stop-color="{hex_c}" stop-opacity="{alpha_val * 0.45:.3f}"/>\n'
+                f'      <stop offset="30%" stop-color="{hex_c}" stop-opacity="{alpha_val * 0.685:.3f}"/>\n'
+                f'      <stop offset="60%" stop-color="{hex_c}" stop-opacity="{alpha_val * 0.220:.3f}"/>\n'
                 f'      <stop offset="100%" stop-color="{hex_c}" stop-opacity="0"/>\n'
                 f"    </radialGradient>"
             )
             blobs_svg.append(
-                f'  <ellipse cx="{ocx:.1f}" cy="{ocy:.1f}" rx="{orx * 1.12:.1f}" ry="{ory * 1.12:.1f}" '
+                f'  <ellipse cx="{ocx:.1f}" cy="{ocy:.1f}" '
+                f'rx="{orx * extent_scale:.1f}" ry="{ory * extent_scale:.1f}" '
                 f'transform="rotate({deg:.1f} {ocx:.1f} {ocy:.1f})" fill="url(#{gid})"/>'
             )
         else:

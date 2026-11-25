@@ -10,6 +10,7 @@ from svgder.curves import fit_closed_contour_to_commands, mask_to_svg_paths
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
+from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
 
 def _make_synthetic_image() -> np.ndarray:
@@ -66,9 +67,18 @@ def test_blobs_engine_valid_svg() -> None:
     assert stats["blobs"] > 0
 
 
+def test_lowpoly_engine_valid_svg() -> None:
+    img = _make_synthetic_image()
+    svg, stats = vectorize_lowpoly(img, LowPolyOptions(points=120))
+    root = ET.fromstring(svg)
+    assert root.tag.endswith("svg")
+    assert stats["triangles"] > 0
+
+
 if __name__ == "__main__":
     test_curve_fitting_valid_path()
     test_gremlin_engine_valid_svg()
     test_canny_engine_valid_svg()
     test_blobs_engine_valid_svg()
+    test_lowpoly_engine_valid_svg()
     print("All SVGder tests passed!")
