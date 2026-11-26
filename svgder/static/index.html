@@ -302,8 +302,8 @@
     <button class="btn" id="convertBtn">Vectorize Image</button>
     <button class="btn secondary" id="downloadBtn" disabled>Download .SVG</button>
     <div style="display:flex; gap:8px;">
-      <button class="btn secondary" id="copyDiffBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Copy Diff PNG</button>
-      <button class="btn secondary" id="downloadDiffBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Download Diff PNG</button>
+      <button class="btn secondary" id="copyViewBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Copy View PNG</button>
+      <button class="btn secondary" id="downloadViewBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Download View PNG</button>
     </div>
 
     <div class="stats" id="statsBox">
@@ -315,7 +315,15 @@
     </div>
 
     <div class="stats" id="trackerBox" style="display:none;">
-      <div style="font-weight:600; color:var(--text); margin-bottom:6px; font-size:0.78rem;">Mode Tradeoffs (click to switch)</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-weight:600; color:var(--text); font-size:0.78rem;">Mode Tradeoffs</span>
+        <span style="display:flex; gap:4px;">
+          <button class="pill" id="exportCsvBtn" title="Download CSV" style="padding:2px 6px; font-size:0.68rem;">CSV</button>
+          <button class="pill" id="copyCsvBtn" title="Copy CSV" style="padding:2px 6px; font-size:0.68rem;">Copy</button>
+          <button class="pill" id="exportTablePngBtn" title="Download Table PNG" style="padding:2px 6px; font-size:0.68rem;">PNG</button>
+          <button class="pill" id="copyTablePngBtn" title="Copy Table PNG" style="padding:2px 6px; font-size:0.68rem;">Copy PNG</button>
+        </span>
+      </div>
       <table id="trackerTable" style="width:100%; border-collapse:collapse; font-size:0.75rem; text-align:left;">
         <thead>
           <tr style="color:var(--muted); border-bottom:1px solid var(--border);">
@@ -555,15 +563,31 @@
         ctx2.drawImage(svgImg, 0, 0, w, h);
         const svgData = ctx2.getImageData(0, 0, w, h).data;
 
-        let totalErr = 0;
+        let sumR = 0, sumG = 0, sumB = 0;
         const n = w * h;
+        for (let i = 0; i < origData.length; i += 4) {
+          sumR += origData[i];
+          sumG += origData[i + 1];
+          sumB += origData[i + 2];
+        }
+        const meanR = sumR / n;
+        const meanG = sumG / n;
+        const meanB = sumB / n;
+
+        let totalErr = 0;
+        let baselineErr = 0;
         for (let i = 0; i < origData.length; i += 4) {
           totalErr +=
             Math.abs(origData[i] - svgData[i]) +
             Math.abs(origData[i + 1] - svgData[i + 1]) +
             Math.abs(origData[i + 2] - svgData[i + 2]);
+          baselineErr +=
+            Math.abs(origData[i] - meanR) +
+            Math.abs(origData[i + 1] - meanG) +
+            Math.abs(origData[i + 2] - meanB);
         }
-        return (totalErr / (n * 3 * 255)) * 100;
+        if (baselineErr < 1) return totalErr < 1 ? 0 : 100;
+        return (totalErr / baselineErr) * 100;
       } catch (_) {
         return null;
       } finally {
@@ -575,8 +599,8 @@
       lastSvg = data.svg;
       $("svgContainer").innerHTML = data.svg;
       $("downloadBtn").disabled = false;
-      $("copyDiffBtn").disabled = false;
-      $("downloadDiffBtn").disabled = false;
+      $("copyViewBtn").disabled = false;
+      $("downloadViewBtn").disabled = false;
       const st = data.stats;
       const modeForResult = st.engine;
       $("stEngine").textContent = fromCache ? `${st.engine} (cached)` : st.engine;
@@ -717,7 +741,7 @@
       a.click();
     });
 
-    async function renderDiffPngBlob() {
+    async function renderCurrentViewPngBlob() {
       const rasterImg = $("rasterPreview");
       const w = rasterImg.naturalWidth || rasterImg.width;
       const h = rasterImg.naturalHeight || rasterImg.height;
@@ -728,21 +752,48 @@
       canvas.height = h;
       const ctx = canvas.getContext("2d");
 
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, w, h);
-      ctx.drawImage(rasterImg, 0, 0, w, h);
-
       const svgBlob = new Blob([lastSvg], { type: "image/svg+xml;charset=utf-8" });
       const svgUrl = URL.createObjectURL(svgBlob);
+      let svgImg = null;
       try {
-        const svgImg = await new Promise((resolve, reject) => {
+        svgImg = await new Promise((resolve, reject) => {
           const img = new Image();
           img.onload = () => resolve(img);
           img.onerror = () => reject(new Error("Failed to render SVG onto canvas."));
           img.src = svgUrl;
         });
-        ctx.globalCompositeOperation = "difference";
-        ctx.drawImage(svgImg, 0, 0, w, h);
+
+        if (currentView === "raster") {
+          ctx.drawImage(rasterImg, 0, 0, w, h);
+        } else if (currentView === "svg") {
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(svgImg, 0, 0, w, h);
+        } else if (currentView === "diff") {
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(rasterImg, 0, 0, w, h);
+          ctx.globalCompositeOperation = "difference";
+          ctx.drawImage(svgImg, 0, 0, w, h);
+        } else {
+          // Split view: raster on left, SVG on right at splitRange%
+          const pct = Number($("splitRange").value) / 100;
+          const splitX = Math.round(w * pct);
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, w, h);
+          ctx.drawImage(rasterImg, 0, 0, w, h);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(splitX, 0, w - splitX, h);
+          ctx.clip();
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(splitX, 0, w - splitX, h);
+          ctx.drawImage(svgImg, 0, 0, w, h);
+          ctx.restore();
+          // Divider line
+          ctx.fillStyle = "#ff6fb5";
+          ctx.fillRect(Math.max(0, splitX - 1), 0, 2, h);
+        }
       } finally {
         URL.revokeObjectURL(svgUrl);
       }
@@ -755,14 +806,14 @@
       });
     }
 
-    $("downloadDiffBtn").addEventListener("click", async () => {
+    $("downloadViewBtn").addEventListener("click", async () => {
       try {
-        const blob = await renderDiffPngBlob();
+        const blob = await renderCurrentViewPngBlob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
         const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, "") : "Ramapillar";
-        a.download = `${base}_${currentMode}_diff.png`;
+        a.download = `${base}_${currentMode}_${currentView}.png`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (err) {
@@ -770,16 +821,141 @@
       }
     });
 
-    $("copyDiffBtn").addEventListener("click", async () => {
-      const btn = $("copyDiffBtn");
+    $("copyViewBtn").addEventListener("click", async () => {
+      const btn = $("copyViewBtn");
       const prev = btn.textContent;
       try {
-        const blob = await renderDiffPngBlob();
+        const blob = await renderCurrentViewPngBlob();
         await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
         btn.textContent = "Copied!";
         setTimeout(() => (btn.textContent = prev), 1400);
       } catch (err) {
         alert("Clipboard copy failed: " + err.message);
+      }
+    });
+
+    function buildTradeoffsCsv() {
+      const base = currentFile ? currentFile.name : "Ramapillar.jpeg";
+      const rows = Array.from(modeTradeoffs.entries()).sort((a, b) => a[1].elapsed_ms - b[1].elapsed_ms);
+      const lines = ["image,mode,time_ms,elements,bytes,size_kb,norm_diff_pct"];
+      for (const [m, st] of rows) {
+        const elems = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "";
+        const kb = (st.bytes / 1024).toFixed(2);
+        const diff = st.diff_pct !== undefined ? st.diff_pct.toFixed(2) : "";
+        lines.push(`"${base.replace(/"/g, '""')}",${m},${st.elapsed_ms},${elems},${st.bytes},${kb},${diff}`);
+      }
+      return lines.join("\n");
+    }
+
+    $("exportCsvBtn").addEventListener("click", () => {
+      if (modeTradeoffs.size === 0) return;
+      const blob = new Blob([buildTradeoffsCsv()], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, "") : "Ramapillar";
+      a.download = `${base}_tradeoffs.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+
+    $("copyCsvBtn").addEventListener("click", async () => {
+      if (modeTradeoffs.size === 0) return;
+      const btn = $("copyCsvBtn");
+      const prev = btn.textContent;
+      try {
+        await navigator.clipboard.writeText(buildTradeoffsCsv());
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = prev), 1200);
+      } catch (err) {
+        alert("Copy failed: " + err.message);
+      }
+    });
+
+    async function renderTradeoffsTablePngBlob() {
+      if (modeTradeoffs.size === 0) throw new Error("No tradeoffs recorded yet.");
+      const rows = Array.from(modeTradeoffs.entries()).sort((a, b) => a[1].elapsed_ms - b[1].elapsed_ms);
+      const scale = 2;
+      const width = 460;
+      const pad = 18;
+      const rowH = 28;
+      const headerH = 58;
+      const height = headerH + rows.length * rowH + pad;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = width * scale;
+      canvas.height = height * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+
+      ctx.fillStyle = "#1b1624";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "#312742";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(1, 1, width - 2, height - 2);
+
+      const base = currentFile ? currentFile.name : "Ramapillar.jpeg";
+      ctx.fillStyle = "#f5effa";
+      ctx.font = "600 14px system-ui, sans-serif";
+      ctx.fillText(`SVGder Mode Tradeoffs — ${base}`, pad, 26);
+
+      const cols = [pad, 130, 215, 290, 380];
+      const headers = ["Mode", "Time", "Elems", "Size", "Diff"];
+      ctx.fillStyle = "#a99bbd";
+      ctx.font = "600 12px system-ui, sans-serif";
+      headers.forEach((hTxt, i) => ctx.fillText(hTxt, cols[i], 48));
+
+      ctx.strokeStyle = "#312742";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, 55);
+      ctx.lineTo(width - pad, 55);
+      ctx.stroke();
+
+      rows.forEach(([m, st], idx) => {
+        const y = 76 + idx * rowH;
+        const elems = String(st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—");
+        const kb = (st.bytes / 1024).toFixed(1) + " KB";
+        const diff = st.diff_pct !== undefined ? `${st.diff_pct.toFixed(1)}%` : "—";
+        const isActive = m === currentMode;
+        ctx.fillStyle = isActive ? "#ff6fb5" : "#d8cfe6";
+        ctx.font = isActive ? "600 12.5px system-ui, sans-serif" : "400 12.5px system-ui, sans-serif";
+        [m, `${st.elapsed_ms} ms`, elems, kb, diff].forEach((val, i) => ctx.fillText(val, cols[i], y));
+      });
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Failed to encode table PNG."));
+        }, "image/png");
+      });
+    }
+
+    $("exportTablePngBtn").addEventListener("click", async () => {
+      try {
+        const blob = await renderTradeoffsTablePngBlob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, "") : "Ramapillar";
+        a.download = `${base}_tradeoffs.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    $("copyTablePngBtn").addEventListener("click", async () => {
+      const btn = $("copyTablePngBtn");
+      const prev = btn.textContent;
+      try {
+        const blob = await renderTradeoffsTablePngBlob();
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = prev), 1200);
+      } catch (err) {
+        alert("Copy failed: " + err.message);
       }
     });
 
