@@ -10,6 +10,7 @@ import cv2
 
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
+from svgder.engines.flood_search import FloodSearchOptions, vectorize_flood_search
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
 from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
@@ -27,6 +28,11 @@ def convert_file(
     soft_gaussian: bool = True,
     poly_points: int = 800,
     wireframe: bool = False,
+    flood_color_tol: float = 18.0,
+    flood_edge_sens: float = 28.0,
+    flood_min_area: float = 20.0,
+    flood_max_stroke: float = 12.0,
+    flood_detect_strokes: bool = True,
 ) -> dict:
     img = cv2.imread(str(input_path), cv2.IMREAD_COLOR)
     if img is None:
@@ -67,6 +73,18 @@ def convert_file(
                 wireframe=wireframe,
             ),
         )
+    elif mode == "flood-search":
+        svg, stats = vectorize_flood_search(
+            img,
+            FloodSearchOptions(
+                color_tolerance=flood_color_tol,
+                edge_sensitivity=flood_edge_sens,
+                tolerance=tolerance,
+                min_area=flood_min_area,
+                max_stroke_width=flood_max_stroke,
+                detect_strokes=flood_detect_strokes,
+            ),
+        )
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -89,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-m",
         "--mode",
-        choices=["gremlin", "canny", "blobs", "lowpoly", "all"],
+        choices=["gremlin", "canny", "blobs", "lowpoly", "flood-search", "all"],
         default="gremlin",
         help="Vectorization engine (default: gremlin).",
     )
@@ -102,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hard-blobs", action="store_true", help="Use crisp ellipses instead of Gaussian gradients.")
     parser.add_argument("--poly-points", type=int, default=800, help="Number of mesh vertices in lowpoly mode.")
     parser.add_argument("--wireframe", action="store_true", help="Draw subtle mesh edges in lowpoly mode.")
+    parser.add_argument("--flood-tol", type=float, default=18.0, help="Color tolerance in flood-search mode.")
+    parser.add_argument("--flood-edge", type=float, default=28.0, help="Edge barrier sensitivity in flood-search mode.")
+    parser.add_argument("--flood-min-area", type=float, default=20.0, help="Min region area in flood-search mode.")
+    parser.add_argument("--flood-max-stroke", type=float, default=12.0, help="Max outline width in flood-search mode.")
+    parser.add_argument("--no-flood-strokes", action="store_true", help="Disable outline-vs-fill detection in flood-search mode.")
     parser.add_argument("--serve", action="store_true", help="Launch the interactive SVGder Studio web UI.")
     parser.add_argument("--port", type=int, default=8765, help="Port for --serve (default: 8765).")
 
@@ -119,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     inp = Path(args.input)
     if args.mode == "all":
         stem = inp.with_suffix("")
-        for m in ("gremlin", "canny", "blobs", "lowpoly"):
+        for m in ("gremlin", "canny", "blobs", "lowpoly", "flood-search"):
             out = Path(f"{stem}_{m}.svg")
             stats = convert_file(
                 inp,
@@ -134,6 +157,11 @@ def main(argv: list[str] | None = None) -> int:
                 soft_gaussian=not args.hard_blobs,
                 poly_points=args.poly_points,
                 wireframe=args.wireframe,
+                flood_color_tol=args.flood_tol,
+                flood_edge_sens=args.flood_edge,
+                flood_min_area=args.flood_min_area,
+                flood_max_stroke=args.flood_max_stroke,
+                flood_detect_strokes=not args.no_flood_strokes,
             )
             print(f"[{m}] -> {out} | {stats}")
         return 0
@@ -152,6 +180,11 @@ def main(argv: list[str] | None = None) -> int:
         soft_gaussian=not args.hard_blobs,
         poly_points=args.poly_points,
         wireframe=args.wireframe,
+        flood_color_tol=args.flood_tol,
+        flood_edge_sens=args.flood_edge,
+        flood_min_area=args.flood_min_area,
+        flood_max_stroke=args.flood_max_stroke,
+        flood_detect_strokes=not args.no_flood_strokes,
     )
     print(f"[{args.mode}] -> {out} | {stats}")
     return 0

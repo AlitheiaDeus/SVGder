@@ -14,6 +14,7 @@ import uvicorn
 
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
+from svgder.engines.flood_search import FloodSearchOptions, vectorize_flood_search
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
 from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
@@ -68,6 +69,11 @@ async def api_vectorize(
     soft_gaussian: bool = Form(default=True),
     poly_points: int = Form(default=800),
     wireframe: bool = Form(default=False),
+    flood_color_tol: float = Form(default=18.0),
+    flood_edge_sens: float = Form(default=28.0),
+    flood_min_area: float = Form(default=20.0),
+    flood_max_stroke: float = Form(default=12.0),
+    flood_detect_strokes: bool = Form(default=True),
 ) -> JSONResponse:
     if file is not None:
         raw = await file.read()
@@ -115,6 +121,18 @@ async def api_vectorize(
             LowPolyOptions(
                 points=max(80, min(3000, poly_points)),
                 wireframe=wireframe,
+            ),
+        )
+    elif mode == "flood-search":
+        svg, stats = vectorize_flood_search(
+            img,
+            FloodSearchOptions(
+                color_tolerance=max(3.0, min(60.0, flood_color_tol)),
+                edge_sensitivity=max(0.0, min(80.0, flood_edge_sens)),
+                tolerance=max(0.2, min(5.0, tolerance)),
+                min_area=max(4.0, min(500.0, flood_min_area)),
+                max_stroke_width=max(2.0, min(30.0, flood_max_stroke)),
+                detect_strokes=flood_detect_strokes,
             ),
         )
     else:

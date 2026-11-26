@@ -227,7 +227,7 @@
   <aside>
     <div>
       <h1>SVGder Studio</h1>
-      <div class="subtitle">Gremlin Bezier · Canny Strokes · Gaussian Blobs · Low-Poly</div>
+      <div class="subtitle">Gremlin · Canny · Blobs · Low-Poly · Flood-Search</div>
     </div>
 
     <div class="dropzone" id="dropzone">
@@ -241,6 +241,7 @@
       <button class="tab" data-mode="canny">Canny</button>
       <button class="tab" data-mode="blobs">Blobs</button>
       <button class="tab" data-mode="lowpoly">Low-Poly</button>
+      <button class="tab" data-mode="flood-search">Flood-Search</button>
     </div>
 
     <div class="control-group" id="gremlinControls">
@@ -283,6 +284,18 @@
       <label>Mesh Vertices <span id="polyVal">800</span></label>
       <input type="range" id="polyPoints" min="150" max="2500" step="50" value="800" />
       <label><input type="checkbox" id="wireframe" /> Show mesh wireframe</label>
+    </div>
+
+    <div class="control-group hidden" id="floodSearchControls">
+      <label>Color Tolerance <span id="floodTolVal">18</span></label>
+      <input type="range" id="floodColorTol" min="4" max="50" step="1" value="18" />
+      <label>Edge Barrier <span id="floodEdgeVal">28</span></label>
+      <input type="range" id="floodEdgeSens" min="0" max="70" step="2" value="28" />
+      <label>Min Region Area <span id="floodAreaVal">20</span>px</label>
+      <input type="range" id="floodMinArea" min="6" max="150" step="2" value="20" />
+      <label>Max Outline Width <span id="floodStrokeVal">12</span>px</label>
+      <input type="range" id="floodMaxStroke" min="3" max="24" step="1" value="12" />
+      <label><input type="checkbox" id="floodDetectStrokes" checked /> Detect outlines vs. fills</label>
     </div>
 
     <button class="btn" id="convertBtn">Vectorize Image</button>
@@ -364,6 +377,7 @@
         $("cannyControls").classList.toggle("hidden", currentMode !== "canny");
         $("blobsControls").classList.toggle("hidden", currentMode !== "blobs");
         $("lowpolyControls").classList.toggle("hidden", currentMode !== "lowpoly");
+        $("floodSearchControls").classList.toggle("hidden", currentMode !== "flood-search");
         runVectorize();
       });
     });
@@ -390,6 +404,10 @@
     $("sigma").addEventListener("input", (e) => ($("sigmaVal").textContent = e.target.value));
     $("nBlobs").addEventListener("input", (e) => ($("blobsVal").textContent = e.target.value));
     $("polyPoints").addEventListener("input", (e) => ($("polyVal").textContent = e.target.value));
+    $("floodColorTol").addEventListener("input", (e) => ($("floodTolVal").textContent = e.target.value));
+    $("floodEdgeSens").addEventListener("input", (e) => ($("floodEdgeVal").textContent = e.target.value));
+    $("floodMinArea").addEventListener("input", (e) => ($("floodAreaVal").textContent = e.target.value));
+    $("floodMaxStroke").addEventListener("input", (e) => ($("floodStrokeVal").textContent = e.target.value));
 
     const dz = $("dropzone");
     dz.addEventListener("click", () => $("fileInput").click());
@@ -430,6 +448,11 @@
         fd.append("soft_gaussian", $("softGaussian").checked ? "true" : "false");
         fd.append("poly_points", $("polyPoints").value);
         fd.append("wireframe", $("wireframe").checked ? "true" : "false");
+        fd.append("flood_color_tol", $("floodColorTol").value);
+        fd.append("flood_edge_sens", $("floodEdgeSens").value);
+        fd.append("flood_min_area", $("floodMinArea").value);
+        fd.append("flood_max_stroke", $("floodMaxStroke").value);
+        fd.append("flood_detect_strokes", $("floodDetectStrokes").checked ? "true" : "false");
 
         const res = await fetch("/api/vectorize", { method: "POST", body: fd });
         const data = await res.json();
