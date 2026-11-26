@@ -336,6 +336,7 @@
         </thead>
         <tbody id="trackerBody"></tbody>
       </table>
+      <div id="radarWrap" style="margin-top:10px; display:flex; flex-direction:column; align-items:center;"></div>
     </div>
   </aside>
 
@@ -423,6 +424,80 @@
         tr.addEventListener("click", () => {
           const targetMode = tr.dataset.switchMode;
           const tab = document.querySelector(`#modeTabs .tab[data-mode="${targetMode}"]`);
+          if (tab) tab.click();
+        });
+      });
+      renderRadarChart(rows);
+    }
+
+    const MODE_COLORS = {
+      gremlin: "#ff6fb5",
+      floodfill: "#8be9fd",
+      lowpoly: "#50fa7b",
+      canny: "#f1fa8c",
+      blobs: "#bd93f9",
+    };
+
+    function renderRadarChart(rows) {
+      const wrap = $("radarWrap");
+      if (!rows.length) {
+        wrap.innerHTML = "";
+        return;
+      }
+      const minMs = Math.min(...rows.map(([, s]) => Math.max(1, s.elapsed_ms)));
+      const minBytes = Math.min(...rows.map(([, s]) => Math.max(1, s.bytes)));
+      const minElems = Math.min(...rows.map(([, s]) => Math.max(1, s.paths ?? s.strokes ?? s.blobs ?? s.triangles ?? 1)));
+
+      const size = 210;
+      const cx = size / 2;
+      const cy = size / 2;
+      const maxR = 66;
+      const angles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI]; // Top: Accuracy, Right: Speed, Bottom: Compact, Left: Simple
+      const labels = ["Accuracy", "Speed", "Compact", "Simple"];
+
+      const pt = (r, a) => `${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`;
+      let svg = `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" style="overflow:visible;">`;
+
+      // Concentric web rings
+      [0.25, 0.5, 0.75, 1.0].forEach((f) => {
+        const ring = angles.map((a) => pt(maxR * f, a)).join(" ");
+        svg += `<polygon points="${ring}" fill="none" stroke="#312742" stroke-width="1"/>`;
+      });
+      // Axis spokes + labels
+      angles.forEach((a, i) => {
+        const [x2, y2] = pt(maxR, a).split(",");
+        svg += `<line x1="${cx}" y1="${cy}" x2="${x2}" y2="${y2}" stroke="#312742" stroke-width="1"/>`;
+        const lx = cx + (maxR + 18) * Math.cos(a);
+        const ly = cy + (maxR + 14) * Math.sin(a) + 3;
+        svg += `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" fill="#a99bbd" font-size="9.5" font-weight="600" text-anchor="middle">${labels[i]}</text>`;
+      });
+
+      // Draw inactive modes first, active mode on top
+      const ordered = [...rows].sort(([a], [b]) => (a === currentMode ? 1 : b === currentMode ? -1 : 0));
+      for (const [m, st] of ordered) {
+        const col = MODE_COLORS[m] || "#ff6fb5";
+        const elems = Math.max(1, st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? 1);
+        const acc = st.diff_pct !== undefined ? Math.max(0.08, Math.min(1, 1 - st.diff_pct / 100)) : 0.5;
+        const spd = Math.max(0.12, Math.min(1, Math.pow(minMs / Math.max(1, st.elapsed_ms), 0.45)));
+        const cmp = Math.max(0.12, Math.min(1, minBytes / Math.max(1, st.bytes)));
+        const smp = Math.max(0.12, Math.min(1, Math.pow(minElems / elems, 0.5)));
+        const vals = [acc, spd, cmp, smp];
+        const poly = vals.map((v, i) => pt(maxR * v, angles[i])).join(" ");
+        const isActive = m === currentMode;
+        svg += `<polygon points="${poly}" fill="${col}" fill-opacity="${isActive ? 0.28 : 0.08}" stroke="${col}" stroke-width="${isActive ? 2 : 1.2}"/>`;
+      }
+      svg += `</svg>`;
+
+      const legend = rows.map(([m]) => {
+        const col = MODE_COLORS[m] || "#ff6fb5";
+        const active = m === currentMode ? "border-color:" + col + "; color:#f5effa;" : "border-color:transparent; color:#a99bbd;";
+        return `<span data-radar-mode="${m}" style="cursor:pointer; display:inline-flex; align-items:center; gap:4px; padding:1px 5px; border:1px solid; border-radius:999px; font-size:0.68rem; ${active}"><span style="width:7px; height:7px; border-radius:50%; background:${col};"></span>${m}</span>`;
+      }).join("");
+
+      wrap.innerHTML = `${svg}<div style="display:flex; flex-wrap:wrap; justify-content:center; gap:4px; margin-top:2px;">${legend}</div>`;
+      wrap.querySelectorAll("[data-radar-mode]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const tab = document.querySelector(`#modeTabs .tab[data-mode="${el.dataset.radarMode}"]`);
           if (tab) tab.click();
         });
       });
