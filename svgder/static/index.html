@@ -299,7 +299,10 @@
       <label><input type="checkbox" id="floodDetectStrokes" checked /> Detect outlines vs. fills</label>
     </div>
 
-    <button class="btn" id="convertBtn">Vectorize Image</button>
+    <div style="display:flex; gap:8px;">
+      <button class="btn" id="convertBtn" style="flex:2;">Vectorize Image</button>
+      <button class="btn secondary" id="autoTuneBtn" style="flex:1;" title="Sweep parameters on fast preview to find best balance">Auto-Tune</button>
+    </div>
     <button class="btn secondary" id="downloadBtn" disabled>Download .SVG</button>
     <div style="display:flex; gap:8px;">
       <button class="btn secondary" id="copyViewBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Copy View PNG</button>
@@ -745,6 +748,53 @@
     }
 
     $("convertBtn").addEventListener("click", () => runVectorize(true));
+
+    $("autoTuneBtn").addEventListener("click", async () => {
+      const btn = $("autoTuneBtn");
+      const prev = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Tuning...";
+      try {
+        const res = await fetch("/api/autotune", { method: "POST", body: buildFormData() });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Auto-Tune failed");
+        const p = data.params || {};
+        if (p.colors !== undefined) {
+          $("colors").value = p.colors;
+          $("colorsVal").textContent = p.colors;
+        }
+        if (p.flood_color_tol !== undefined) {
+          $("floodColorTol").value = p.flood_color_tol;
+          $("floodTolVal").textContent = p.flood_color_tol;
+        }
+        if (p.flood_edge_sens !== undefined) {
+          $("floodEdgeSens").value = p.flood_edge_sens;
+          $("floodEdgeVal").textContent = p.flood_edge_sens;
+        }
+        if (p.flood_min_area !== undefined) {
+          $("floodMinArea").value = p.flood_min_area;
+          $("floodAreaVal").textContent = p.flood_min_area;
+        }
+        if (p.sigma !== undefined) {
+          $("sigma").value = p.sigma;
+          $("sigmaVal").textContent = p.sigma;
+        }
+        if (p.poly_points !== undefined) {
+          $("polyPoints").value = p.poly_points;
+          $("polyVal").textContent = p.poly_points;
+        }
+        if (p.n_blobs !== undefined) {
+          $("nBlobs").value = p.n_blobs;
+          $("blobsVal").textContent = p.n_blobs;
+        }
+        await runVectorize(true);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    });
 
     let previewTimer = null;
     let previewSeq = 0;

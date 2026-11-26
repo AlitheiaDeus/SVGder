@@ -275,5 +275,115 @@ async def api_preview(
     return JSONResponse({"svg": svg, "elapsed_ms": elapsed_ms, "mode": mode})
 
 
+def _norm_mae_pct(orig_bgr: np.ndarray, approx_bgr: np.ndarray) -> float:
+    o = orig_bgr.astype(np.float32)
+    a = approx_bgr.astype(np.float32)
+    mean_c = np.mean(o, axis=(0, 1), keepdims=True)
+    base = float(np.sum(np.abs(o - mean_c)))
+    err = float(np.sum(np.abs(o - a)))
+    if base < 1.0:
+        return 0.0 if err < 1.0 else 100.0
+    return (err / base) * 100.0
+
+
+@app.post("/api/autotune")
+async def api_autotune(
+    file: UploadFile | None = File(default=None),
+    use_sample: bool = Form(default=False),
+    mode: str = Form(default="gremlin"),
+    background: str = Form(default="auto"),
+    ink_on_top: bool = Form(default=True),
+) -> JSONResponse:
+    if file is not None:
+        raw = await file.read()
+        img = _decode_image_bytes(raw)
+    elif use_sample:
+        sample = WORKSPACE_ROOT / "Ramapillar.jpeg"
+        if not sample.exists():
+            raise HTTPException(status_code=404, detail="Ramapillar.jpeg not found.")
+        img = cv2.imread(str(sample), cv2.IMREAD_COLOR)
+    else:
+        raise HTTPException(status_code=400, detail="Provide an image file or set use_sample=true.")
+
+    orig_h, orig_w = img.shape[:2]
+    max_dim = max(orig_h, orig_w)
+    scale = min(1.0, 320.0 / max_dim)
+    small = (
+        cv2.resize(img, (max(1, int(orig_w * scale)), max(1, int(orig_h * scale))), interpolation=cv2.INTER_AREA)
+        if scale < 1.0
+        else img
+    )
+
+    t0 = time.perf_counter()
+    params: dict = {}
+
+    if mode == "gremlin":
+        best_loss = 1e9
+        best_c = 24
+        for c in (8, 12, 16, 20, 26, 32):
+            prev = preview_gremlin(
+                small,
+                GremlinOptions(colors=c, background=background, ink_on_top=ink_on_top),  # type: ignore[arg-type]
+            )
+            diff_pct = _norm_mae_pct(small, prev)
+            loss = diff_pct + 0.32 * c
+            if loss < best_loss:
+                best_loss = loss
+                best_c = c
+        params = {"colors": best_c}
+    elif mode == "floodfill":
+        best_loss = 1e9
+        best_pair = (18, 28, 20)
+        for tol_v, edge_v in ((10, 22), (14, 26), (18, 28), (24, 34), (32, 42)):
+            scaled_area = max(3.0, 20.0 * (scale * scale))
+            prev = preview_floodfill(
+                small,
+                FloodFillOptions(color_tolerance=float(tol_v), edge_sensitivity=float(edge_v), min_area=scaled_area),
+            )
+            diff_pct = _norm_mae_pct(small, prev)
+            # Penalize overly tight tolerance that creates too many micro-regions
+            loss = diff_pct + max(0.0, (24.0 - tol_v) * 0.25)
+            if loss < best_loss:
+                best_loss = loss
+                best_pair = (tol_v, edge_v, 20)
+        params = {
+            "flood_color_tol": best_pair[0],
+            "flood_edge_sens": best_pair[1],
+            "flood_min_area": best_pair[2],
+        }
+    elif mode == "canny":
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        med = float(np.median(gray))
+        best_sig = 0.33
+        best_dist = 1e9
+        for sig in (0.18, 0.27, 0.33, 0.45, 0.58):
+            lo = int(max(0, (1.0 - sig) * med))
+            hi = int(min(255, (1.0 + sig) * med))
+            edges = cv2.Canny(gray, lo, hi)
+            density = float(np.mean(edges > 0))
+            dist = abs(density - 0.065)
+            if dist < best_dist:
+                best_dist = dist
+                best_sig = sig
+        params = {"sigma": best_sig}
+    elif mode == "lowpoly":
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        lap_var = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+        pts = int(np.clip(350 + lap_var * 0.65, 350, 1800))
+        pts = int(round(pts / 50.0) * 50)
+        params = {"poly_points": pts}
+    elif mode == "blobs":
+        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32)
+        color_std = float(np.mean(np.std(lab, axis=(0, 1))))
+        nb = int(np.clip(80 + color_std * 6.0, 100, 380))
+        nb = int(round(nb / 20.0) * 20)
+        params = {"n_blobs": nb}
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported mode: {mode}")
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    return JSONResponse({"mode": mode, "params": params, "elapsed_ms": elapsed_ms})
+
+
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     uvicorn.run(app, host=host, port=port, log_level="info")
