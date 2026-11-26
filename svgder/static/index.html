@@ -311,6 +311,7 @@
       <div>Time: <span class="stat-val" id="stTime">—</span></div>
       <div>Elements: <span class="stat-val" id="stElems">—</span></div>
       <div>Size: <span class="stat-val" id="stSize">—</span></div>
+      <div>Diff: <span class="stat-val" id="stDiff">—</span></div>
     </div>
 
     <div class="stats" id="trackerBox" style="display:none;">
@@ -322,6 +323,7 @@
             <th style="padding:3px 2px;">Time</th>
             <th style="padding:3px 2px;">Elems</th>
             <th style="padding:3px 2px;">Size</th>
+            <th style="padding:3px 2px;">Diff</th>
           </tr>
         </thead>
         <tbody id="trackerBody"></tbody>
@@ -399,12 +401,14 @@
       body.innerHTML = rows.map(([m, st]) => {
         const elems = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
         const kb = (st.bytes / 1024).toFixed(1) + " KB";
+        const diffTxt = st.diff_pct !== undefined ? `${st.diff_pct.toFixed(1)}%` : "…";
         const activeStyle = m === currentMode ? "color:var(--accent); font-weight:600;" : "color:var(--muted);";
         return `<tr data-switch-mode="${m}" style="cursor:pointer; border-bottom:1px solid #ffffff0d; ${activeStyle}">
           <td style="padding:4px 2px;">${m}</td>
           <td style="padding:4px 2px;">${st.elapsed_ms} ms</td>
           <td style="padding:4px 2px;">${elems}</td>
           <td style="padding:4px 2px;">${kb}</td>
+          <td style="padding:4px 2px;">${diffTxt}</td>
         </tr>`;
       }).join("");
       body.querySelectorAll("tr[data-switch-mode]").forEach((tr) => {
@@ -507,6 +511,66 @@
       runVectorize();
     }
 
+    async function computeSvgDiffPct(svgText) {
+      const rasterImg = $("rasterPreview");
+      if (!rasterImg.complete || !rasterImg.naturalWidth) {
+        await new Promise((res) => {
+          rasterImg.addEventListener("load", res, { once: true });
+          setTimeout(res, 1500);
+        });
+      }
+      const nw = rasterImg.naturalWidth || rasterImg.width;
+      const nh = rasterImg.naturalHeight || rasterImg.height;
+      if (!nw || !nh) return null;
+
+      const maxSide = 256;
+      const scale = Math.min(1, maxSide / Math.max(nw, nh));
+      const w = Math.max(1, Math.round(nw * scale));
+      const h = Math.max(1, Math.round(nh * scale));
+
+      const c1 = document.createElement("canvas");
+      c1.width = w;
+      c1.height = h;
+      const ctx1 = c1.getContext("2d");
+      ctx1.fillStyle = "#fff";
+      ctx1.fillRect(0, 0, w, h);
+      ctx1.drawImage(rasterImg, 0, 0, w, h);
+      const origData = ctx1.getImageData(0, 0, w, h).data;
+
+      const svgBlob = new Blob([svgText], { type: "image/svg+xml;charset=utf-8" });
+      const svgUrl = URL.createObjectURL(svgBlob);
+      try {
+        const svgImg = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error("SVG render failed"));
+          img.src = svgUrl;
+        });
+        const c2 = document.createElement("canvas");
+        c2.width = w;
+        c2.height = h;
+        const ctx2 = c2.getContext("2d");
+        ctx2.fillStyle = "#fff";
+        ctx2.fillRect(0, 0, w, h);
+        ctx2.drawImage(svgImg, 0, 0, w, h);
+        const svgData = ctx2.getImageData(0, 0, w, h).data;
+
+        let totalErr = 0;
+        const n = w * h;
+        for (let i = 0; i < origData.length; i += 4) {
+          totalErr +=
+            Math.abs(origData[i] - svgData[i]) +
+            Math.abs(origData[i + 1] - svgData[i + 1]) +
+            Math.abs(origData[i + 2] - svgData[i + 2]);
+        }
+        return (totalErr / (n * 3 * 255)) * 100;
+      } catch (_) {
+        return null;
+      } finally {
+        URL.revokeObjectURL(svgUrl);
+      }
+    }
+
     function applyVectorResult(data, fromCache = false) {
       lastSvg = data.svg;
       $("svgContainer").innerHTML = data.svg;
@@ -514,13 +578,26 @@
       $("copyDiffBtn").disabled = false;
       $("downloadDiffBtn").disabled = false;
       const st = data.stats;
+      const modeForResult = st.engine;
       $("stEngine").textContent = fromCache ? `${st.engine} (cached)` : st.engine;
       $("stTime").textContent = `${st.elapsed_ms} ms`;
       $("stElems").textContent = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
       $("stSize").textContent = `${(st.bytes / 1024).toFixed(1)} KB`;
-      modeTradeoffs.set(currentMode, st);
+      $("stDiff").textContent = st.diff_pct !== undefined ? `${st.diff_pct.toFixed(1)}%` : "…";
+      modeTradeoffs.set(modeForResult, st);
       renderTracker();
       updateSplit();
+
+      if (st.diff_pct === undefined) {
+        computeSvgDiffPct(data.svg).then((pct) => {
+          if (pct === null) return;
+          st.diff_pct = pct;
+          if (currentMode === modeForResult) {
+            $("stDiff").textContent = `${pct.toFixed(1)}%`;
+          }
+          renderTracker();
+        });
+      }
     }
 
     async function runVectorize(forceRefresh = false) {
@@ -569,6 +646,67 @@
     }
 
     $("convertBtn").addEventListener("click", () => runVectorize(true));
+
+    let previewTimer = null;
+    let previewSeq = 0;
+
+    function buildFormData() {
+      const fd = new FormData();
+      if (currentFile) fd.append("file", currentFile);
+      else fd.append("use_sample", "true");
+      fd.append("mode", currentMode);
+      fd.append("colors", $("colors").value);
+      fd.append("tolerance", $("tolerance").value);
+      fd.append("background", $("background").value);
+      fd.append("ink_on_top", $("inkOnTop").checked ? "true" : "false");
+      fd.append("canny_style", $("cannyStyle").value);
+      fd.append("stroke_width", $("strokeWidth").value);
+      fd.append("sigma", $("sigma").value);
+      fd.append("n_blobs", $("nBlobs").value);
+      fd.append("soft_gaussian", $("softGaussian").checked ? "true" : "false");
+      fd.append("poly_points", $("polyPoints").value);
+      fd.append("wireframe", $("wireframe").checked ? "true" : "false");
+      fd.append("flood_color_tol", $("floodColorTol").value);
+      fd.append("flood_edge_sens", $("floodEdgeSens").value);
+      fd.append("flood_min_area", $("floodMinArea").value);
+      fd.append("flood_max_stroke", $("floodMaxStroke").value);
+      fd.append("flood_detect_strokes", $("floodDetectStrokes").checked ? "true" : "false");
+      return fd;
+    }
+
+    async function runPreview() {
+      const seq = ++previewSeq;
+      try {
+        const res = await fetch("/api/preview", { method: "POST", body: buildFormData() });
+        if (!res.ok || seq !== previewSeq) return;
+        const data = await res.json();
+        if (seq !== previewSeq) return;
+        $("svgContainer").innerHTML = data.svg;
+        $("stEngine").textContent = `${data.mode} (preview)`;
+        $("stTime").textContent = `${data.elapsed_ms} ms`;
+        $("stElems").textContent = "—";
+        $("stSize").textContent = "raster";
+        updateSplit();
+      } catch (_) {
+        // Ignore transient preview errors while scrubbing
+      }
+    }
+
+    function schedulePreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(runPreview, 120);
+    }
+
+    [
+      "colors", "background", "inkOnTop",
+      "cannyStyle", "strokeWidth", "sigma",
+      "nBlobs", "softGaussian",
+      "polyPoints", "wireframe",
+      "floodColorTol", "floodEdgeSens", "floodMinArea",
+    ].forEach((id) => {
+      const el = $(id);
+      if (el) el.addEventListener(el.type === "range" ? "input" : "change", schedulePreview);
+    });
     $("downloadBtn").addEventListener("click", () => {
       if (!lastSvg) return;
       const blob = new Blob([lastSvg], { type: "image/svg+xml" });

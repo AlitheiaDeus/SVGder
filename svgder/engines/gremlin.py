@@ -186,6 +186,49 @@ def _absorb_tiny_specks(label_map: np.ndarray, min_area: float) -> np.ndarray:
     return out
 
 
+def preview_gremlin(
+    image_bgr: np.ndarray,
+    options: GremlinOptions | None = None,
+) -> np.ndarray:
+    """Fast raster preview of Gremlin's Lab quantization without Bezier curve fitting."""
+    opts = options or GremlinOptions()
+    h, w = image_bgr.shape[:2]
+
+    smoothed = image_bgr.copy()
+    if opts.mean_shift:
+        smoothed = cv2.pyrMeanShiftFiltering(smoothed, sp=8, sr=18)
+    for _ in range(max(0, opts.smooth_passes)):
+        smoothed = cv2.bilateralFilter(smoothed, d=7, sigmaColor=24, sigmaSpace=24)
+
+    rgb = cv2.cvtColor(smoothed, cv2.COLOR_BGR2RGB)
+    lab = cv2.cvtColor(smoothed, cv2.COLOR_BGR2LAB)
+
+    bg_mask, bg_lab = _detect_background_mask(lab)
+    fg_mask = ~bg_mask
+    if opts.background == "white":
+        bg_rgb = np.array([255, 255, 255], dtype=np.uint8)
+    elif opts.background == "auto" and bg_lab is not None and np.any(bg_mask):
+        orig_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        bg_rgb = np.clip(np.round(np.median(orig_rgb[bg_mask], axis=0)), 0, 255).astype(np.uint8)
+    else:
+        bg_rgb = np.array([255, 255, 255], dtype=np.uint8)
+
+    if not np.any(fg_mask):
+        fg_mask = np.ones((h, w), dtype=bool)
+
+    label_map, palette_rgb, _ = _quantize_lab_foreground(
+        rgb, fg_mask, n_colors=opts.colors, min_delta_e=opts.min_delta_e
+    )
+    label_map = _absorb_tiny_specks(label_map, min_area=max(4.0, opts.min_area * 0.8))
+
+    out_rgb = np.empty((h, w, 3), dtype=np.uint8)
+    out_rgb[:] = bg_rgb
+    valid = label_map >= 0
+    if np.any(valid):
+        out_rgb[valid] = palette_rgb[label_map[valid]]
+    return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
+
+
 def vectorize_gremlin(
     image_bgr: np.ndarray,
     options: GremlinOptions | None = None,

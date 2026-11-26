@@ -100,14 +100,11 @@ def _offset_svg_path(d: str, dx: int, dy: int) -> str:
     return " ".join(out)
 
 
-def vectorize_floodfill(
+def _compute_floodfill_labels(
     bgr: np.ndarray,
-    opts: FloodFillOptions | None = None,
-) -> tuple[str, dict]:
-    """Vectorize an image by flood-masking, inflating/blocking out base shapes, and layering high-detail lassos on top."""
-    if opts is None:
-        opts = FloodFillOptions()
-
+    opts: FloodFillOptions,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Run bilateral smoothing, edge-barrier seeded flood-fill, and fringe absorption."""
     h, w = bgr.shape[:2]
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     smooth_bgr = cv2.bilateralFilter(bgr, d=5, sigmaColor=22, sigmaSpace=5)
@@ -153,6 +150,42 @@ def vectorize_floodfill(
             label_map[ry : ry + rh, rx : rx + rw][filled] = region_id
 
     label_map = _absorb_unclaimed_pixels(label_map, rgb)
+    return label_map, rgb, region_id
+
+
+def preview_floodfill(
+    bgr: np.ndarray,
+    opts: FloodFillOptions | None = None,
+) -> np.ndarray:
+    """Fast raster preview of Floodfill region segmentation without Bezier curve fitting."""
+    if opts is None:
+        opts = FloodFillOptions()
+    label_map, rgb, region_id = _compute_floodfill_labels(bgr, opts)
+    if region_id == 0:
+        med = np.clip(np.round(np.median(rgb.reshape(-1, 3), axis=0)), 0, 255).astype(np.uint8)
+        out_rgb = np.full_like(rgb, med)
+        return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
+
+    out_rgb = rgb.copy()
+    for lbl in np.unique(label_map):
+        if lbl <= 0:
+            continue
+        mask = label_map == lbl
+        med = np.clip(np.round(np.median(rgb[mask], axis=0)), 0, 255).astype(np.uint8)
+        out_rgb[mask] = med
+    return cv2.cvtColor(out_rgb, cv2.COLOR_RGB2BGR)
+
+
+def vectorize_floodfill(
+    bgr: np.ndarray,
+    opts: FloodFillOptions | None = None,
+) -> tuple[str, dict]:
+    """Vectorize an image by flood-masking, inflating/blocking out base shapes, and layering high-detail lassos on top."""
+    if opts is None:
+        opts = FloodFillOptions()
+
+    h, w = bgr.shape[:2]
+    label_map, rgb, region_id = _compute_floodfill_labels(bgr, opts)
 
     if region_id == 0:
         bg_hex = rgb_to_hex(np.median(rgb.reshape(-1, 3), axis=0))

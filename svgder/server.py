@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import time
 
@@ -14,8 +15,8 @@ import uvicorn
 
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
-from svgder.engines.floodfill import FloodFillOptions, vectorize_floodfill
-from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
+from svgder.engines.floodfill import FloodFillOptions, preview_floodfill, vectorize_floodfill
+from svgder.engines.gremlin import GremlinOptions, preview_gremlin, vectorize_gremlin
 from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -164,6 +165,114 @@ async def api_vectorize(
     stats["elapsed_ms"] = round((time.perf_counter() - t0) * 1000)
     stats["bytes"] = len(svg.encode("utf-8"))
     return JSONResponse({"svg": svg, "stats": stats})
+
+
+def _wrap_raster_preview_svg(bgr: np.ndarray, orig_w: int, orig_h: int) -> str:
+    ok, buf = cv2.imencode(".png", bgr)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to encode preview PNG.")
+    b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {orig_w} {orig_h}" '
+        f'width="{orig_w}" height="{orig_h}">'
+        f'<image href="data:image/png;base64,{b64}" width="{orig_w}" height="{orig_h}" '
+        f'preserveAspectRatio="none"/></svg>'
+    )
+
+
+@app.post("/api/preview")
+async def api_preview(
+    file: UploadFile | None = File(default=None),
+    use_sample: bool = Form(default=False),
+    mode: str = Form(default="gremlin"),
+    colors: int = Form(default=24),
+    tolerance: float = Form(default=0.85),
+    background: str = Form(default="auto"),
+    ink_on_top: bool = Form(default=True),
+    canny_style: str = Form(default="ink"),
+    stroke_width: float = Form(default=2.0),
+    sigma: float = Form(default=0.33),
+    n_blobs: int = Form(default=220),
+    soft_gaussian: bool = Form(default=True),
+    poly_points: int = Form(default=800),
+    wireframe: bool = Form(default=False),
+    flood_color_tol: float = Form(default=18.0),
+    flood_edge_sens: float = Form(default=28.0),
+    flood_min_area: float = Form(default=20.0),
+) -> JSONResponse:
+    if file is not None:
+        raw = await file.read()
+        img = _decode_image_bytes(raw)
+    elif use_sample:
+        sample = WORKSPACE_ROOT / "Ramapillar.jpeg"
+        if not sample.exists():
+            raise HTTPException(status_code=404, detail="Ramapillar.jpeg not found.")
+        img = cv2.imread(str(sample), cv2.IMREAD_COLOR)
+    else:
+        raise HTTPException(status_code=400, detail="Provide an image file or set use_sample=true.")
+
+    orig_h, orig_w = img.shape[:2]
+    max_dim = max(orig_h, orig_w)
+    if max_dim > 560:
+        scale = 560.0 / max_dim
+        small = cv2.resize(img, (max(1, int(orig_w * scale)), max(1, int(orig_h * scale))), interpolation=cv2.INTER_AREA)
+    else:
+        scale = 1.0
+        small = img
+
+    t0 = time.perf_counter()
+    if mode == "gremlin":
+        prev_bgr = preview_gremlin(
+            small,
+            GremlinOptions(
+                colors=max(2, min(48, colors)),
+                background=background,  # type: ignore[arg-type]
+                ink_on_top=ink_on_top,
+            ),
+        )
+        svg = _wrap_raster_preview_svg(prev_bgr, orig_w, orig_h)
+    elif mode == "floodfill":
+        scaled_area = max(4.0, flood_min_area * (scale * scale))
+        prev_bgr = preview_floodfill(
+            small,
+            FloodFillOptions(
+                color_tolerance=max(3.0, min(60.0, flood_color_tol)),
+                edge_sensitivity=max(0.0, min(80.0, flood_edge_sens)),
+                min_area=scaled_area,
+            ),
+        )
+        svg = _wrap_raster_preview_svg(prev_bgr, orig_w, orig_h)
+    elif mode == "canny":
+        svg, _ = vectorize_canny(
+            small,
+            CannyOptions(
+                sigma=max(0.05, min(0.9, sigma)),
+                tolerance=max(0.2, min(5.0, tolerance)),
+                stroke_width=max(0.5, min(10.0, stroke_width)),
+                style=canny_style,  # type: ignore[arg-type]
+            ),
+        )
+    elif mode == "blobs":
+        svg, _ = vectorize_blobs(
+            small,
+            BlobOptions(
+                n_blobs=max(20, min(160, n_blobs)),
+                soft_gaussian=soft_gaussian,
+            ),
+        )
+    elif mode == "lowpoly":
+        svg, _ = vectorize_lowpoly(
+            small,
+            LowPolyOptions(
+                points=max(80, min(1200, poly_points)),
+                wireframe=wireframe,
+            ),
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported mode: {mode}")
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    return JSONResponse({"svg": svg, "elapsed_ms": elapsed_ms, "mode": mode})
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
