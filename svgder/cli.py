@@ -10,7 +10,7 @@ import cv2
 
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
-from svgder.engines.flood_search import FloodSearchOptions, vectorize_flood_search
+from svgder.engines.floodfill import FloodFillOptions, vectorize_floodfill
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
 from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
@@ -73,10 +73,10 @@ def convert_file(
                 wireframe=wireframe,
             ),
         )
-    elif mode == "flood-search":
-        svg, stats = vectorize_flood_search(
+    elif mode == "floodfill":
+        svg, stats = vectorize_floodfill(
             img,
-            FloodSearchOptions(
+            FloodFillOptions(
                 color_tolerance=flood_color_tol,
                 edge_sensitivity=flood_edge_sens,
                 tolerance=tolerance,
@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-m",
         "--mode",
-        choices=["gremlin", "canny", "blobs", "lowpoly", "flood-search", "all"],
+        choices=["gremlin", "canny", "blobs", "lowpoly", "floodfill", "all"],
         default="gremlin",
         help="Vectorization engine (default: gremlin).",
     )
@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     inp = Path(args.input)
     if args.mode == "all":
         stem = inp.with_suffix("")
-        for m in ("gremlin", "canny", "blobs", "lowpoly", "flood-search"):
+        for m in ("gremlin", "canny", "blobs", "lowpoly", "floodfill"):
             out = Path(f"{stem}_{m}.svg")
             stats = convert_file(
                 inp,

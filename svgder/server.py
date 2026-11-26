@@ -14,7 +14,7 @@ import uvicorn
 
 from svgder.engines.blobs import BlobOptions, vectorize_blobs
 from svgder.engines.canny import CannyOptions, vectorize_canny
-from svgder.engines.flood_search import FloodSearchOptions, vectorize_flood_search
+from svgder.engines.floodfill import FloodFillOptions, vectorize_floodfill
 from svgder.engines.gremlin import GremlinOptions, vectorize_gremlin
 from svgder.engines.lowpoly import LowPolyOptions, vectorize_lowpoly
 
@@ -43,6 +43,29 @@ def _decode_image_bytes(data: bytes) -> np.ndarray:
 def index() -> HTMLResponse:
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     return HTMLResponse(html)
+
+
+_FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ff6fb5"/>
+      <stop offset="100%" stop-color="#8be9fd"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#130f1a"/>
+  <rect x="12" y="14" width="8" height="8" rx="1.5" fill="#ff6fb5" opacity="0.9"/>
+  <rect x="22" y="14" width="8" height="8" rx="1.5" fill="#ff6fb5" opacity="0.55"/>
+  <rect x="12" y="24" width="8" height="8" rx="1.5" fill="#ff6fb5" opacity="0.55"/>
+  <path d="M 16 48 C 20 22, 44 42, 48 16" fill="none" stroke="url(#g)" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="16" cy="48" r="4" fill="#ff6fb5"/>
+  <circle cx="48" cy="16" r="4" fill="#8be9fd"/>
+  <rect x="44" y="42" width="7" height="7" rx="1.5" fill="#8be9fd" opacity="0.85"/>
+</svg>"""
+
+
+@app.get("/favicon.ico")
+def favicon() -> HTMLResponse:
+    return HTMLResponse(_FAVICON_SVG, media_type="image/svg+xml")
 
 
 @app.get("/api/sample")
@@ -123,10 +146,10 @@ async def api_vectorize(
                 wireframe=wireframe,
             ),
         )
-    elif mode == "flood-search":
-        svg, stats = vectorize_flood_search(
+    elif mode == "floodfill":
+        svg, stats = vectorize_floodfill(
             img,
-            FloodSearchOptions(
+            FloodFillOptions(
                 color_tolerance=max(3.0, min(60.0, flood_color_tol)),
                 edge_sensitivity=max(0.0, min(80.0, flood_edge_sens)),
                 tolerance=max(0.2, min(5.0, tolerance)),

@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SVGder Studio — Image to Vector Lab</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
   <style>
     :root {
       --bg: #120f18;
@@ -227,7 +228,7 @@
   <aside>
     <div>
       <h1>SVGder Studio</h1>
-      <div class="subtitle">Gremlin · Canny · Blobs · Low-Poly · Flood-Search</div>
+      <div class="subtitle">Gremlin · Canny · Blobs · Low-Poly · Floodfill</div>
     </div>
 
     <div class="dropzone" id="dropzone">
@@ -241,7 +242,7 @@
       <button class="tab" data-mode="canny">Canny</button>
       <button class="tab" data-mode="blobs">Blobs</button>
       <button class="tab" data-mode="lowpoly">Low-Poly</button>
-      <button class="tab" data-mode="flood-search">Flood-Search</button>
+      <button class="tab" data-mode="floodfill">Floodfill</button>
     </div>
 
     <div class="control-group" id="gremlinControls">
@@ -300,12 +301,31 @@
 
     <button class="btn" id="convertBtn">Vectorize Image</button>
     <button class="btn secondary" id="downloadBtn" disabled>Download .SVG</button>
+    <div style="display:flex; gap:8px;">
+      <button class="btn secondary" id="copyDiffBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Copy Diff PNG</button>
+      <button class="btn secondary" id="downloadDiffBtn" disabled style="flex:1; font-size:0.8rem; padding:8px;">Download Diff PNG</button>
+    </div>
 
     <div class="stats" id="statsBox">
       <div>Engine: <span class="stat-val" id="stEngine">—</span></div>
       <div>Time: <span class="stat-val" id="stTime">—</span></div>
       <div>Elements: <span class="stat-val" id="stElems">—</span></div>
       <div>Size: <span class="stat-val" id="stSize">—</span></div>
+    </div>
+
+    <div class="stats" id="trackerBox" style="display:none;">
+      <div style="font-weight:600; color:var(--text); margin-bottom:6px; font-size:0.78rem;">Mode Tradeoffs (click to switch)</div>
+      <table id="trackerTable" style="width:100%; border-collapse:collapse; font-size:0.75rem; text-align:left;">
+        <thead>
+          <tr style="color:var(--muted); border-bottom:1px solid var(--border);">
+            <th style="padding:3px 2px;">Mode</th>
+            <th style="padding:3px 2px;">Time</th>
+            <th style="padding:3px 2px;">Elems</th>
+            <th style="padding:3px 2px;">Size</th>
+          </tr>
+        </thead>
+        <tbody id="trackerBody"></tbody>
+      </table>
     </div>
   </aside>
 
@@ -337,8 +357,64 @@
     let currentMode = "gremlin";
     let currentView = "split";
     let lastSvg = "";
+    const svgCache = new Map();
+    const modeTradeoffs = new Map();
 
     const $ = (id) => document.getElementById(id);
+
+    function getFileSignature() {
+      if (!currentFile) return "sample:Ramapillar";
+      return `${currentFile.name}:${currentFile.size}:${currentFile.lastModified}`;
+    }
+
+    function getModeCacheKey(mode) {
+      const sig = getFileSignature();
+      if (mode === "gremlin") {
+        return `${sig}|gremlin|${$("colors").value}|${$("tolerance").value}|${$("background").value}|${$("inkOnTop").checked}`;
+      }
+      if (mode === "canny") {
+        return `${sig}|canny|${$("cannyStyle").value}|${$("strokeWidth").value}|${$("sigma").value}|${$("tolerance").value}`;
+      }
+      if (mode === "blobs") {
+        return `${sig}|blobs|${$("nBlobs").value}|${$("softGaussian").checked}`;
+      }
+      if (mode === "lowpoly") {
+        return `${sig}|lowpoly|${$("polyPoints").value}|${$("wireframe").checked}`;
+      }
+      if (mode === "floodfill") {
+        return `${sig}|floodfill|${$("floodColorTol").value}|${$("floodEdgeSens").value}|${$("floodMinArea").value}|${$("floodMaxStroke").value}|${$("floodDetectStrokes").checked}|${$("tolerance").value}`;
+      }
+      return `${sig}|${mode}`;
+    }
+
+    function renderTracker() {
+      const box = $("trackerBox");
+      const body = $("trackerBody");
+      if (modeTradeoffs.size === 0) {
+        box.style.display = "none";
+        return;
+      }
+      box.style.display = "block";
+      const rows = Array.from(modeTradeoffs.entries()).sort((a, b) => a[1].elapsed_ms - b[1].elapsed_ms);
+      body.innerHTML = rows.map(([m, st]) => {
+        const elems = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
+        const kb = (st.bytes / 1024).toFixed(1) + " KB";
+        const activeStyle = m === currentMode ? "color:var(--accent); font-weight:600;" : "color:var(--muted);";
+        return `<tr data-switch-mode="${m}" style="cursor:pointer; border-bottom:1px solid #ffffff0d; ${activeStyle}">
+          <td style="padding:4px 2px;">${m}</td>
+          <td style="padding:4px 2px;">${st.elapsed_ms} ms</td>
+          <td style="padding:4px 2px;">${elems}</td>
+          <td style="padding:4px 2px;">${kb}</td>
+        </tr>`;
+      }).join("");
+      body.querySelectorAll("tr[data-switch-mode]").forEach((tr) => {
+        tr.addEventListener("click", () => {
+          const targetMode = tr.dataset.switchMode;
+          const tab = document.querySelector(`#modeTabs .tab[data-mode="${targetMode}"]`);
+          if (tab) tab.click();
+        });
+      });
+    }
 
     function updateSplit() {
       const pct = Number($("splitRange").value);
@@ -377,7 +453,7 @@
         $("cannyControls").classList.toggle("hidden", currentMode !== "canny");
         $("blobsControls").classList.toggle("hidden", currentMode !== "blobs");
         $("lowpolyControls").classList.toggle("hidden", currentMode !== "lowpoly");
-        $("floodSearchControls").classList.toggle("hidden", currentMode !== "flood-search");
+        $("floodSearchControls").classList.toggle("hidden", currentMode !== "floodfill");
         runVectorize();
       });
     });
@@ -424,11 +500,35 @@
 
     function setFile(file) {
       currentFile = file;
+      svgCache.clear();
+      modeTradeoffs.clear();
+      renderTracker();
       $("rasterPreview").src = URL.createObjectURL(file);
       runVectorize();
     }
 
-    async function runVectorize() {
+    function applyVectorResult(data, fromCache = false) {
+      lastSvg = data.svg;
+      $("svgContainer").innerHTML = data.svg;
+      $("downloadBtn").disabled = false;
+      $("copyDiffBtn").disabled = false;
+      $("downloadDiffBtn").disabled = false;
+      const st = data.stats;
+      $("stEngine").textContent = fromCache ? `${st.engine} (cached)` : st.engine;
+      $("stTime").textContent = `${st.elapsed_ms} ms`;
+      $("stElems").textContent = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
+      $("stSize").textContent = `${(st.bytes / 1024).toFixed(1)} KB`;
+      modeTradeoffs.set(currentMode, st);
+      renderTracker();
+      updateSplit();
+    }
+
+    async function runVectorize(forceRefresh = false) {
+      const cacheKey = getModeCacheKey(currentMode);
+      if (!forceRefresh && svgCache.has(cacheKey)) {
+        applyVectorResult(svgCache.get(cacheKey), true);
+        return;
+      }
       const btn = $("convertBtn");
       btn.disabled = true;
       btn.textContent = "Vectorizing...";
@@ -458,15 +558,8 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || "Vectorization failed");
 
-        lastSvg = data.svg;
-        $("svgContainer").innerHTML = data.svg;
-        $("downloadBtn").disabled = false;
-        const st = data.stats;
-        $("stEngine").textContent = st.engine;
-        $("stTime").textContent = `${st.elapsed_ms} ms`;
-        $("stElems").textContent = st.paths ?? st.strokes ?? st.blobs ?? st.triangles ?? "—";
-        $("stSize").textContent = `${(st.bytes / 1024).toFixed(1)} KB`;
-        updateSplit();
+        svgCache.set(cacheKey, data);
+        applyVectorResult(data, false);
       } catch (err) {
         alert(err.message);
       } finally {
@@ -475,7 +568,7 @@
       }
     }
 
-    $("convertBtn").addEventListener("click", runVectorize);
+    $("convertBtn").addEventListener("click", () => runVectorize(true));
     $("downloadBtn").addEventListener("click", () => {
       if (!lastSvg) return;
       const blob = new Blob([lastSvg], { type: "image/svg+xml" });
@@ -484,6 +577,72 @@
       const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, "") : "Ramapillar";
       a.download = `${base}_${currentMode}.svg`;
       a.click();
+    });
+
+    async function renderDiffPngBlob() {
+      const rasterImg = $("rasterPreview");
+      const w = rasterImg.naturalWidth || rasterImg.width;
+      const h = rasterImg.naturalHeight || rasterImg.height;
+      if (!w || !h || !lastSvg) throw new Error("Nothing to export yet.");
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(rasterImg, 0, 0, w, h);
+
+      const svgBlob = new Blob([lastSvg], { type: "image/svg+xml;charset=utf-8" });
+      const svgUrl = URL.createObjectURL(svgBlob);
+      try {
+        const svgImg = await new Promise((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(new Error("Failed to render SVG onto canvas."));
+          img.src = svgUrl;
+        });
+        ctx.globalCompositeOperation = "difference";
+        ctx.drawImage(svgImg, 0, 0, w, h);
+      } finally {
+        URL.revokeObjectURL(svgUrl);
+      }
+
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("Failed to encode PNG."));
+        }, "image/png");
+      });
+    }
+
+    $("downloadDiffBtn").addEventListener("click", async () => {
+      try {
+        const blob = await renderDiffPngBlob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const base = currentFile ? currentFile.name.replace(/\.[^.]+$/, "") : "Ramapillar";
+        a.download = `${base}_${currentMode}_diff.png`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+
+    $("copyDiffBtn").addEventListener("click", async () => {
+      const btn = $("copyDiffBtn");
+      const prev = btn.textContent;
+      try {
+        const blob = await renderDiffPngBlob();
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+        btn.textContent = "Copied!";
+        setTimeout(() => (btn.textContent = prev), 1400);
+      } catch (err) {
+        alert("Clipboard copy failed: " + err.message);
+      }
     });
 
     runVectorize();
